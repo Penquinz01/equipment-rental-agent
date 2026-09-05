@@ -77,17 +77,35 @@ LOYALTY_DISCOUNT = {"Gold": 0.05, "Silver": 0.02, "Bronze": 0.0, "Unrated": 0.0,
 # 1. parse_inquiry  — LLM-based parser with regex fallback
 # ---------------------------------------------------------------------------
 
-PARSE_SYSTEM_PROMPT = """You are a conversational parsing assistant for a heavy equipment rental company chatbot.
-Extract structured fields from the contractor's inquiry, considering any prior conversation history or session context provided.
-Rules:
-1. If a detail (such as equipment, duration, start date, site info, license, or contractor name) was established in prior messages and is NOT changed by the user, PRESERVE IT.
-2. If the user updates or changes a detail (e.g. 'Actually, give me a boom lift instead', or provides missing rental days), use the NEW value.
-3. Return ONLY a valid JSON object with these keys:
-  equipment_requested, duration_days, start_date, site_info,
-  urgency ("high" or "normal"), contractor_name_mentioned,
-  license_mentioned (true/false/null)
-4. If a field cannot be determined from either the text or prior context, set it to null.
-5. Do not include any markdown fences or text outside the JSON object."""
+PARSE_SYSTEM_PROMPT = """You are an intelligent parsing assistant for a heavy equipment rental company chatbot.
+Analyze the user's message in the context of the conversation history.
+
+1. Classify the user's INTENT into one of:
+   - "greeting": Informal greeting or pleasantry (e.g. "Hello", "Hi", "Hey", "Good morning")
+   - "general_question": Asking general questions about fleet, machines, pricing, delivery, locations (e.g. "What equipment do you have?", "Do you rent excavators?", "How much is the crane?")
+   - "rental_inquiry": Starting a rental request or asking to book a specific machine
+   - "providing_details": Supplying specific details (dates, duration, site, license, company name)
+   - "gratitude": Acknowledging or saying thanks (e.g. "Thank you", "Sounds good", "Okay thanks")
+   - "reset": Asking to start over, clear chat, or cancel
+
+2. Extract structured fields if mentioned or established in context:
+   - equipment_requested: specific equipment name/type or null
+   - duration_days: integer number of days or null
+   - start_date: string date or null
+   - site_info: string site condition/access or null
+   - urgency: "high" or "normal"
+   - contractor_name_mentioned: company name or null
+   - license_mentioned: boolean or string or null
+
+3. Multi-turn rules:
+   - If a rental detail was established previously and NOT changed by user, PRESERVE IT.
+   - If the user explicitly changes equipment or dates, use the NEW value.
+   - If user is just saying "Hello" or asking a general question, do NOT invent rental requirements.
+
+Return ONLY a valid JSON object with keys:
+  intent, equipment_requested, duration_days, start_date, site_info,
+  urgency, contractor_name_mentioned, license_mentioned
+Do not include any markdown fences or text outside the JSON object."""
 
 
 def parse_inquiry(
@@ -259,6 +277,15 @@ def _parse_with_regex(text: str, session_context: dict | None = None) -> dict:
                         "nccco", "cdl", "operator cert"]
     license_mentioned = any(kw in lower for kw in license_keywords)
 
+    # Determine intent in regex fallback
+    intent = "rental_inquiry"
+    if lower in ("hello", "hi", "hey", "good morning", "good afternoon", "greetings", "howdy"):
+        intent = "greeting"
+    elif lower in ("thanks", "thank you", "thx", "appreciate it", "great thanks", "sounds good", "perfect"):
+        intent = "gratitude"
+    elif any(kw in lower for kw in ["what do you have", "what can i rent", "what equipment", "catalog", "fleet", "where are you"]):
+        intent = "general_question"
+
     # Contractor name — hard to regex, leave None
     contractor_name_mentioned = None
 
@@ -277,6 +304,7 @@ def _parse_with_regex(text: str, session_context: dict | None = None) -> dict:
             license_mentioned = session_context.get("license_mentioned")
 
     return {
+        "intent": intent,
         "equipment_requested": equipment_requested,
         "duration_days": duration_days,
         "start_date": start_date,
@@ -290,6 +318,7 @@ def _parse_with_regex(text: str, session_context: dict | None = None) -> dict:
 def _normalise_parsed(parsed: dict, original_text: str) -> dict:
     """Ensure all expected keys exist and types are consistent."""
     defaults = {
+        "intent": "rental_inquiry",
         "equipment_requested": None,
         "duration_days": None,
         "start_date": None,
@@ -301,6 +330,13 @@ def _normalise_parsed(parsed: dict, original_text: str) -> dict:
     for key, default in defaults.items():
         if key not in parsed or parsed[key] == "":
             parsed[key] = default
+
+    # Strong keyword overrides for intent
+    orig_clean = original_text.strip().lower()
+    if orig_clean in ("hello", "hi", "hey", "good morning", "good afternoon", "greetings", "howdy"):
+        parsed["intent"] = "greeting"
+    elif orig_clean in ("thanks", "thank you", "thx", "appreciate it", "great thanks", "sounds good", "perfect"):
+        parsed["intent"] = "gratitude"
 
     # Coerce duration_days to int if present
     if parsed["duration_days"] is not None:
@@ -622,18 +658,47 @@ def _compute_lead_days(start_date_raw) -> int | None:
         return None
 
 
-# ---------------------------------------------------------------------------
-# 5. make_decision — threshold mapping
-# ---------------------------------------------------------------------------
+def make_decision(
+    total_score: int,
+    scorecard: dict | None = None,
+    parsed: dict | None = None,
+    contractor: pd.Series | None = None,
+    equipment: pd.Series | None = None,
+) -> str:
+    """Map total score and operational context to a decision string.
 
-def make_decision(total_score: int) -> str:
-    """Map total score to a decision string."""
+    Avoids premature MANUAL_REVIEW for customers who are simply in the discovery
+    phase and haven't provided their company name or rental dates yet.
+    """
     if total_score >= THRESHOLD_AUTO_QUOTE:
         return "AUTO_QUOTE"
-    elif total_score >= THRESHOLD_REQUEST_INFO:
-        return "REQUEST_INFO"
-    else:
+
+    # Red Flag 1: Equipment completely out of stock
+    if equipment is not None and int(equipment.get("units_available", 1)) <= 0:
         return "MANUAL_REVIEW"
+
+    # Red Flag 2: Contractor with invalid insurance or high default risk
+    if contractor is not None:
+        ins = str(contractor.get("insurance_valid", "Yes")).strip().lower()
+        tier = str(contractor.get("tier", ""))
+        avg_days = float(contractor.get("avg_payment_days", 0) or 0)
+        if ins in ("no", "false", "0"):
+            return "MANUAL_REVIEW"
+        if tier in ("Flagged", "Bronze") and avg_days > 45:
+            return "MANUAL_REVIEW"
+
+    # Red Flag 3: High-value asset rush request
+    if parsed and parsed.get("urgency") == "high":
+        if equipment is not None and float(equipment.get("daily_rate", 0)) >= 1000:
+            return "MANUAL_REVIEW"
+
+    # If score is below 50 simply because information is missing (discovery phase)
+    if total_score < THRESHOLD_REQUEST_INFO:
+        if parsed and (parsed.get("duration_days") is None or contractor is None):
+            return "REQUEST_INFO"
+        return "MANUAL_REVIEW"
+
+    return "REQUEST_INFO"
 
 
 # ---------------------------------------------------------------------------
@@ -802,7 +867,149 @@ def _recommend_next_step(scorecard: dict, parsed: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 7. generate_reasoning_text — LLM chain-of-thought explanation
+# 7. Conversational Dialogue Generator (Agentic Persona)
+# ---------------------------------------------------------------------------
+
+AGENTIC_REPLY_PROMPT = """You are Alex, an experienced and friendly rental operations specialist at Cymonic Heavy Equipment Rentals.
+You chat like a real, helpful human customer service agent — warm, professional, clear, and proactive.
+
+Company Fleet:
+- JCB 3CX Backhoe: $450/day, 3 available (requires Class A license)
+- Caterpillar D6 Dozer: $850/day, 1 available (requires Class A license)
+- Komatsu PC210 Excavator: $620/day, 4 available (requires Class B license)
+- Genie Z-45 Boom Lift: $320/day, 0 available (currently rented out)
+- Ingersoll Rand Air Compressor: $210/day, 5 available
+- Volvo A40G Hauler: $1100/day, 1 available (requires Class A license)
+- Multiquip Plate Compactor: $150/day, 8 available
+- Grove GMK3050 Crane: $1200/day, 2 available (requires Class B license)
+- Skytrak 6034 Telehandler: $550/day, 3 available (requires Class B license)
+- Sullair 185 Portable Generator: $280/day, 7 available
+
+Your mission:
+Write the exact message the assistant should send to the user based on the context and operational state below.
+Rules:
+1. GREETING: Warmly welcome the customer, introduce yourself as Alex from Cymonic Rentals, and ask how you can help with their job site equipment needs.
+2. GENERAL_QUESTION: Answer accurately using our fleet data above. Keep it concise, helpful, and invite them to explore specific machines.
+3. REQUEST_INFO: Enthusiastically confirm equipment interest and stock availability, acknowledge any details they gave, and conversationally ask for the missing details (e.g. rental duration, start date, site access, or contractor company name) so you can issue a firm quote.
+4. AUTO_QUOTE: Warmly congratulate the contractor! Clearly summarize the rental terms (machine, duration, start date, contractor name, loyalty discount if any), state the total price clearly, and ask if they'd like to confirm the booking.
+5. MANUAL_REVIEW: Be courteous and reassuring. Explain professionally that because of specific operational/safety requirements (such as crane site clearance, heavy hauling route survey, or account verification), our operations team is preparing an urgent review to confirm availability.
+6. GRATITUDE: Acknowledge politely and offer further assistance.
+7. Keep the response concise, natural, and friendly (2 to 4 sentences). Never include markdown JSON, robot labels, or system headers in your conversational reply."""
+
+
+def _generate_conversational_reply(
+    user_input: str,
+    decision: str,
+    parsed: dict,
+    equipment: pd.Series | None,
+    contractor: pd.Series | None,
+    scorecard: dict | None,
+    chat_history: list[dict] | None = None,
+    quote: dict | None = None,
+    review_ticket: dict | None = None,
+    missing_info: dict | None = None,
+) -> str:
+    """Generate a warm, natural, human-like dialogue response using Groq LLM (with template fallback)."""
+    if groq_client is not None:
+        try:
+            equip_str = (
+                f"{equipment['name']} (${equipment['daily_rate']}/day, {equipment['units_available']} available)"
+                if equipment is not None else "None identified"
+            )
+            contr_str = (
+                f"{contractor['company_name']} ({contractor['tier']} tier, insurance={contractor.get('insurance_valid', 'Yes')})"
+                if contractor is not None else "Unknown / Not identified"
+            )
+
+            state_summary = (
+                f"Customer Input: \"{user_input}\"\n"
+                f"Intent: {parsed.get('intent', 'rental_inquiry')}\n"
+                f"Decision: {decision}\n"
+                f"Equipment: {equip_str}\n"
+                f"Contractor: {contr_str}\n"
+            )
+
+            if quote:
+                state_summary += (
+                    f"Quote Total: ${quote['final_total']:.2f} "
+                    f"(Subtotal: ${quote['subtotal']:.2f}, Daily: ${quote['daily_rate']}, "
+                    f"Days: {quote['duration_days']}, Loyalty Discount: ${quote['loyalty_discount']:.2f})\n"
+                )
+            if missing_info:
+                state_summary += f"Missing Fields to ask for: {', '.join(missing_info.get('missing_fields', []))}\n"
+            if review_ticket:
+                state_summary += f"Review Priority: {review_ticket.get('priority')}, Triggers: {'; '.join(review_ticket.get('triggers', []))}\n"
+
+            messages = [
+                {"role": "system", "content": AGENTIC_REPLY_PROMPT},
+            ]
+            if chat_history:
+                for msg in chat_history[-4:]:
+                    role = msg.get("role", "user")
+                    if role in ("user", "assistant"):
+                        messages.append({"role": role, "content": str(msg.get("content", ""))})
+
+            messages.append({
+                "role": "user",
+                "content": f"Please generate the natural chat reply for this situation:\n{state_summary}",
+            })
+
+            response = groq_client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=messages,
+                temperature=0.4,
+                max_tokens=300,
+            )
+            reply = response.choices[0].message.content.strip()
+            if reply.startswith('"') and reply.endswith('"'):
+                reply = reply[1:-1]
+            return reply
+        except Exception:
+            pass
+
+    # High quality human fallback
+    if decision in ("GREETING", "greeting"):
+        return (
+            "Hello! Welcome to Cymonic Heavy Equipment Rentals. My name is Alex. "
+            "How can I assist you with your equipment or job site needs today?"
+        )
+    elif decision in ("GRATITUDE", "gratitude"):
+        return "You're very welcome! If you need anything else or want to adjust details, just let me know."
+    elif decision in ("GENERAL_QUESTION", "general_question"):
+        return (
+            "We maintain a full commercial fleet including backhoes, dozers, excavators, "
+            "boom lifts, cranes, haulers, and generators. What machine can we quote for you?"
+        )
+    elif decision == "AUTO_QUOTE" and quote:
+        return (
+            f"Great news! Your quote for the {quote['equipment']} is confirmed at "
+            f"${quote['final_total']:,.2f} for {quote['duration_days']} days. "
+            f"We have reserved the unit for you. Would you like to proceed with booking?"
+        )
+    elif decision == "REQUEST_INFO" and missing_info:
+        missing_str = ", ".join(missing_info.get("missing_fields", ["additional details"]))
+        equip_name = equipment["name"] if equipment is not None else "equipment"
+        return (
+            f"We'd love to help you with the {equip_name}! To lock in your reservation and pricing, "
+            f"could you provide your {missing_str}?"
+        )
+    elif decision == "MANUAL_REVIEW" and review_ticket:
+        return (
+            "Thanks for reaching out. Due to specific operational and site clearance requirements, "
+            "our operations team is conducting an urgent review of this request. "
+            "A rental coordinator will follow up with you shortly."
+        )
+    elif decision == "UNRECOGNIZED":
+        return (
+            "We carry earthmoving, lifting, aerial, compaction, and power generation equipment. "
+            "Could you specify the machine name you're looking for, such as our backhoes, dozers, or excavators?"
+        )
+    else:
+        return "I'd be glad to assist! Could you specify what machine you need and when your project begins?"
+
+
+# ---------------------------------------------------------------------------
+# 8. generate_reasoning_text — LLM chain-of-thought explanation
 # ---------------------------------------------------------------------------
 
 REASONING_SYSTEM_PROMPT = """You are drafting an internal decision note for a rental operations team.
@@ -1017,6 +1224,50 @@ def run_rental_agent(
 
     # 2. Parse the inquiry with multi-turn support
     parsed = parse_inquiry(user_input, chat_history=chat_history, session_context=session_context)
+    intent = parsed.get("intent", "rental_inquiry")
+
+    # Handle pure conversational intents (Greeting, Gratitude, General Questions)
+    if intent == "greeting":
+        msg = _generate_conversational_reply(user_input, "GREETING", parsed, None, None, None, chat_history=chat_history)
+        return {
+            "decision": "IN_CONVERSATION",
+            "message": msg,
+            "reasoning": "🧠 Agent Thought Process:\n  1. Recognized greeting from customer.\n  2. Responded with friendly introductory welcome and offered machinery assistance.",
+            "scorecard": None,
+            "parsed_fields": parsed,
+            "equipment_name": session_context.get("equipment_requested") if session_context else None,
+            "contractor_name": session_context.get("contractor_name_mentioned") if session_context else None,
+            "session_context": session_context or {},
+            "is_followup": bool(session_context),
+        }
+
+    if intent == "gratitude":
+        msg = _generate_conversational_reply(user_input, "GRATITUDE", parsed, None, None, None, chat_history=chat_history)
+        return {
+            "decision": "IN_CONVERSATION",
+            "message": msg,
+            "reasoning": "🧠 Agent Thought Process:\n  1. Customer expressed thanks / acknowledgement.\n  2. Acknowledged politely and affirmed readiness for next steps.",
+            "scorecard": None,
+            "parsed_fields": parsed,
+            "equipment_name": session_context.get("equipment_requested") if session_context else None,
+            "contractor_name": session_context.get("contractor_name_mentioned") if session_context else None,
+            "session_context": session_context or {},
+            "is_followup": bool(session_context),
+        }
+
+    if intent == "general_question" and not parsed.get("equipment_requested"):
+        msg = _generate_conversational_reply(user_input, "GENERAL_QUESTION", parsed, None, None, None, chat_history=chat_history)
+        return {
+            "decision": "IN_CONVERSATION",
+            "message": msg,
+            "reasoning": "🧠 Agent Thought Process:\n  1. Addressed general customer inquiry regarding fleet availability and equipment types.\n  2. Provided concise catalog guidance.",
+            "scorecard": None,
+            "parsed_fields": parsed,
+            "equipment_name": session_context.get("equipment_requested") if session_context else None,
+            "contractor_name": session_context.get("contractor_name_mentioned") if session_context else None,
+            "session_context": session_context or {},
+            "is_followup": bool(session_context),
+        }
 
     # 3. Match equipment and contractor
     equipment = match_equipment(parsed, equipment_df)
@@ -1031,18 +1282,18 @@ def run_rental_agent(
 
     # 4. Handle unrecognized equipment
     if equipment is None:
+        msg = _generate_conversational_reply(
+            user_input, "UNRECOGNIZED", parsed, None, contractor, None,
+            chat_history=chat_history,
+        )
         return {
             "decision": "UNRECOGNIZED",
-            "message": (
-                "I couldn't identify the equipment you're looking for. "
-                "Could you specify the machine name? We have: "
-                + ", ".join(equipment_df["name"].tolist()) + "."
-            ),
+            "message": msg,
             "reasoning": (
                 "🧠 Agent Thought Process:\n"
-                f"  1. Parsed input but could not match equipment.\n"
+                f"  1. Parsed inquiry but could not identify specific machine in fleet.\n"
                 f"  2. Equipment requested: '{parsed.get('equipment_requested', 'None detected')}'\n"
-                f"  3. Action: Ask user to clarify equipment name."
+                f"  3. Action: Naturally guided customer toward our available machinery categories."
             ),
             "scorecard": None,
             "parsed_fields": parsed,
@@ -1056,12 +1307,32 @@ def run_rental_agent(
     scorecard = calculate_score(parsed, equipment, contractor)
 
     # 6. Decide
-    decision = make_decision(scorecard["total"])
+    decision = make_decision(
+        scorecard["total"],
+        scorecard=scorecard,
+        parsed=parsed,
+        contractor=contractor,
+        equipment=equipment,
+    )
 
     # 7. Generate decision-specific response
     response = generate_response(decision, scorecard, parsed, equipment, contractor)
 
-    # 8. Add reasoning & multi-turn metadata
+    # 8. Generate dynamic human message
+    response["message"] = _generate_conversational_reply(
+        user_input,
+        decision,
+        parsed,
+        equipment,
+        contractor,
+        scorecard,
+        chat_history=chat_history,
+        quote=response.get("quote"),
+        review_ticket=response.get("review_ticket"),
+        missing_info=response.get("missing_info"),
+    )
+
+    # 9. Add reasoning & multi-turn metadata
     response["reasoning"] = generate_reasoning_text(scorecard, decision, parsed, session_context=session_context)
     response["session_context"] = parsed
     response["is_followup"] = is_followup
@@ -1201,49 +1472,58 @@ def interactive_chat():
         session_context = result.get("session_context", {})
 
         decision = result.get("decision", "UNKNOWN")
-        emoji_map = {"AUTO_QUOTE": "✅", "REQUEST_INFO": "⚠️", "MANUAL_REVIEW": "🚨", "UNRECOGNIZED": "❓"}
+        emoji_map = {
+            "AUTO_QUOTE": "✅",
+            "REQUEST_INFO": "⚠️",
+            "MANUAL_REVIEW": "🚨",
+            "UNRECOGNIZED": "❓",
+            "IN_CONVERSATION": "💬",
+            "GREETING": "👋",
+        }
+
+        # 1. Primary human agent dialogue
         print("\n" + "-" * 70)
-        print(f"🤖 Decision: {emoji_map.get(decision, '🔹')} {decision}")
+        print(f"🤖 Alex (Rental Specialist):")
+        print(f"   {result.get('message', '')}")
 
-        if result.get("scorecard"):
-            sc = result["scorecard"]
-            print(f"📊 Qualification Score: {sc.get('total')}/{sc.get('max_total')}")
+        # 2. Operational assessment card (shown during rental evaluation)
+        if decision not in ("IN_CONVERSATION", "GREETING") or result.get("scorecard"):
+            print("\n📋 [Operational Assessment]")
+            print(f"   Status: {emoji_map.get(decision, '🔹')} {decision}")
 
-        if decision == "AUTO_QUOTE" and result.get("quote"):
-            q = result["quote"]
-            print(f"💰 Total Quote: ${q['final_total']:,.2f}")
-            print(f"   Equipment: {q['equipment']} (${q['daily_rate']}/day)")
-            print(f"   Duration:  {q['duration_days']} days (Subtotal: ${q['subtotal']:,.2f})")
-            if q.get("loyalty_discount", 0) > 0:
-                print(f"   Loyalty Discount: -${q['loyalty_discount']:.2f} ({q.get('tier')} tier)")
-            print(f"   Delivery: ${q['delivery_fee']:.2f} | Damage Waiver: ${q['damage_waiver']:.2f} | Tax: ${q['tax']:.2f}")
+            if result.get("scorecard"):
+                sc = result["scorecard"]
+                print(f"   Qualification Score: {sc.get('total')}/{sc.get('max_total')}")
 
-        elif decision == "REQUEST_INFO" and result.get("missing_info"):
-            print(f"📋 Missing Information Required:")
-            for f in result["missing_info"].get("missing_fields", []):
-                print(f"   • {f}")
-            print(f"\n💬 Message to Contractor:\n{result['missing_info'].get('message')}")
+            if decision == "AUTO_QUOTE" and result.get("quote"):
+                q = result["quote"]
+                print(f"   💰 Approved Quote: ${q['final_total']:,.2f}")
+                print(f"      Machine:  {q['equipment']} (${q['daily_rate']}/day)")
+                print(f"      Duration: {q['duration_days']} days (Subtotal: ${q['subtotal']:,.2f})")
+                if q.get("loyalty_discount", 0) > 0:
+                    print(f"      Discount: -${q['loyalty_discount']:.2f} ({q.get('tier')} tier)")
+                print(f"      Fees:     Delivery ${q['delivery_fee']:.2f} | Waiver ${q['damage_waiver']:.2f} | Tax ${q['tax']:.2f}")
 
-        elif decision == "MANUAL_REVIEW" and result.get("review_ticket"):
-            t = result["review_ticket"]
-            print(f"🚨 Operations Review Ticket (Priority: {t.get('priority')}):")
-            print(f"   Recommendation: {t.get('recommendation')}")
-            for tr in t.get("triggers", []):
-                print(f"   • {tr}")
+            elif decision == "REQUEST_INFO" and result.get("missing_info"):
+                print("   Missing Requirements Needed:")
+                for f in result["missing_info"].get("missing_fields", []):
+                    print(f"      • {f}")
 
-        elif result.get("message"):
-            print(f"💬 {result['message']}")
+            elif decision == "MANUAL_REVIEW" and result.get("review_ticket"):
+                t = result["review_ticket"]
+                print(f"   🚨 Operations Review Ticket (Priority: {t.get('priority')}):")
+                print(f"      Next Step: {t.get('recommendation')}")
+                for tr in t.get("triggers", []):
+                    print(f"      • {tr}")
 
-        # Show agent thought process
-        print(f"\n🧠 Agent Reasoning:\n{result.get('reasoning')}")
+            if result.get("reasoning"):
+                print(f"\n🧠 Agent Reasoning:\n{result.get('reasoning')}")
+
         print("-" * 70)
 
         # Append to history
         chat_history.append({"role": "user", "content": user_input})
-        reply_summary = f"Decision: {decision}"
-        if result.get("quote"):
-            reply_summary += f", Quote: ${result['quote']['final_total']:.2f}"
-        chat_history.append({"role": "assistant", "content": reply_summary})
+        chat_history.append({"role": "assistant", "content": result.get("message", f"Decision: {decision}")})
 
 
 if __name__ == "__main__":
