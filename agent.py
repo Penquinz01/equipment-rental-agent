@@ -107,7 +107,7 @@ LOYALTY_DISCOUNT = {"Gold": 0.05, "Silver": 0.02, "Bronze": 0.0, "Unrated": 0.0,
 # ---------------------------------------------------------------------------
 
 PARSE_SYSTEM_PROMPT = """You are an intelligent parsing assistant for a heavy equipment rental company chatbot.
-Analyze the user's message in the context of the conversation history.
+Analyze the user's message in the context of the conversation history.The Company name is HiTech
 
 1. Classify the user's INTENT into one of:
    - "greeting": Informal greeting or pleasantry (e.g. "Hello", "Hi", "Hey", "Good morning")
