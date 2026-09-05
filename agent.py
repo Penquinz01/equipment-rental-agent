@@ -1073,10 +1073,8 @@ def run_rental_agent(
 # Quick test (run this file directly)
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    import sys
-    sys.stdout.reconfigure(encoding="utf-8")
-
+def run_automated_tests():
+    """Run all automated single-turn and multi-turn test cases."""
     test_inputs = [
         # Should -> AUTO_QUOTE (Gold tier, all info, low-risk equipment)
         "Need the JCB 3CX Backhoe for 5 days starting Sept 15, site is confirmed, "
@@ -1130,9 +1128,7 @@ if __name__ == "__main__":
         if result.get("message"):
             print(f"\nMessage: {result['message']}")
 
-    # -----------------------------------------------------------------------
-    # Multi-turn demo test: Turn 1 (Incomplete) -> Turn 2 (Fulfill)
-    # -----------------------------------------------------------------------
+    # Multi-turn demo test
     print(f"\n{'='*70}")
     print("TEST MULTI-TURN CONVERSATION MEMORY:")
     print(f"{'='*70}")
@@ -1161,4 +1157,101 @@ if __name__ == "__main__":
     if res2.get("quote"):
         print(f"Quote Generated: ${res2['quote']['final_total']:.2f}")
     print(f"Reasoning:\n{res2['reasoning']}")
+
+
+def interactive_chat():
+    """Live interactive chat loop in terminal with multi-turn memory."""
+    print("=" * 70)
+    print("🏗️  EQUIPMENT RENTAL DECISION AGENT — INTERACTIVE CHAT MODE")
+    print("    Type your message to talk with the agent.")
+    print("    Commands: 'reset' (clear memory), 'test' (run test suite), 'exit' (quit)")
+    print("=" * 70)
+
+    chat_history = []
+    session_context = {}
+
+    while True:
+        try:
+            user_input = input("\nYou: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nExiting chat. Goodbye!")
+            break
+
+        if not user_input:
+            continue
+        if user_input.lower() in ("exit", "quit", "q"):
+            print("Exiting chat. Goodbye!")
+            break
+        if user_input.lower() == "test":
+            run_automated_tests()
+            continue
+        if user_input.lower() in ("reset", "clear"):
+            chat_history = []
+            session_context = {}
+            print("🔄 Session reset! Context memory cleared.")
+            continue
+
+        result = run_rental_agent(
+            user_input,
+            chat_history=chat_history,
+            session_context=session_context,
+        )
+
+        # Update session memory
+        session_context = result.get("session_context", {})
+
+        decision = result.get("decision", "UNKNOWN")
+        emoji_map = {"AUTO_QUOTE": "✅", "REQUEST_INFO": "⚠️", "MANUAL_REVIEW": "🚨", "UNRECOGNIZED": "❓"}
+        print("\n" + "-" * 70)
+        print(f"🤖 Decision: {emoji_map.get(decision, '🔹')} {decision}")
+
+        if result.get("scorecard"):
+            sc = result["scorecard"]
+            print(f"📊 Qualification Score: {sc.get('total')}/{sc.get('max_total')}")
+
+        if decision == "AUTO_QUOTE" and result.get("quote"):
+            q = result["quote"]
+            print(f"💰 Total Quote: ${q['final_total']:,.2f}")
+            print(f"   Equipment: {q['equipment']} (${q['daily_rate']}/day)")
+            print(f"   Duration:  {q['duration_days']} days (Subtotal: ${q['subtotal']:,.2f})")
+            if q.get("loyalty_discount", 0) > 0:
+                print(f"   Loyalty Discount: -${q['loyalty_discount']:.2f} ({q.get('tier')} tier)")
+            print(f"   Delivery: ${q['delivery_fee']:.2f} | Damage Waiver: ${q['damage_waiver']:.2f} | Tax: ${q['tax']:.2f}")
+
+        elif decision == "REQUEST_INFO" and result.get("missing_info"):
+            print(f"📋 Missing Information Required:")
+            for f in result["missing_info"].get("missing_fields", []):
+                print(f"   • {f}")
+            print(f"\n💬 Message to Contractor:\n{result['missing_info'].get('message')}")
+
+        elif decision == "MANUAL_REVIEW" and result.get("review_ticket"):
+            t = result["review_ticket"]
+            print(f"🚨 Operations Review Ticket (Priority: {t.get('priority')}):")
+            print(f"   Recommendation: {t.get('recommendation')}")
+            for tr in t.get("triggers", []):
+                print(f"   • {tr}")
+
+        elif result.get("message"):
+            print(f"💬 {result['message']}")
+
+        # Show agent thought process
+        print(f"\n🧠 Agent Reasoning:\n{result.get('reasoning')}")
+        print("-" * 70)
+
+        # Append to history
+        chat_history.append({"role": "user", "content": user_input})
+        reply_summary = f"Decision: {decision}"
+        if result.get("quote"):
+            reply_summary += f", Quote: ${result['quote']['final_total']:.2f}"
+        chat_history.append({"role": "assistant", "content": reply_summary})
+
+
+if __name__ == "__main__":
+    import sys
+    sys.stdout.reconfigure(encoding="utf-8")
+
+    if "--test" in sys.argv:
+        run_automated_tests()
+    else:
+        interactive_chat()
 
