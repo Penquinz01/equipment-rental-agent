@@ -34,8 +34,37 @@ load_dotenv()
 
 # Groq LLM setup
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = "llama-3.3-70b-versatile"
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+
+
+def _get_active_groq_model(client: Groq | None) -> str:
+    """Find the best available model on the user's Groq account."""
+    env_model = os.getenv("GROQ_MODEL")
+    if env_model:
+        return env_model
+    if not client:
+        return "qwen/qwen3.8-27b"
+    preferred = [
+        "qwen/qwen3.8-27b",
+        "qwen/qwen3.6-27b",
+        "openai/gpt-oss-120b",
+        "llama-3.3-70b-versatile",
+        "llama3-70b-8192",
+    ]
+    try:
+        available = {m.id for m in client.models.list().data}
+        for pref in preferred:
+            if pref in available:
+                return pref
+        for m in available:
+            if not any(k in m for k in ("whisper", "guard", "orpheus", "safeguard")):
+                return m
+    except Exception:
+        pass
+    return "qwen/qwen3.8-27b"
+
+
+GROQ_MODEL = _get_active_groq_model(groq_client)
 
 # Data paths (relative to project root)
 BASE_DIR = Path(__file__).resolve().parent
@@ -254,7 +283,7 @@ def _parse_with_regex(text: str, session_context: dict | None = None) -> dict:
     )
     if date_match:
         start_date = date_match.group(1).strip()
-    elif "tomorrow" in lower:
+    elif any(w in lower for w in ["tomorrow", "tommorrow", "tmrw", "tomorow", "tommorow"]):
         start_date = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
     elif "next week" in lower:
         start_date = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
@@ -263,7 +292,7 @@ def _parse_with_regex(text: str, session_context: dict | None = None) -> dict:
 
     # Urgency
     rush_keywords = ["urgent", "urgently", "rush", "asap", "tomorrow morning",
-                     "need it today", "tomorrow", "immediately"]
+                     "need it today", "tomorrow", "tommorrow", "immediately"]
     urgency = "high" if any(kw in lower for kw in rush_keywords) else "normal"
 
     # Site info
@@ -274,7 +303,7 @@ def _parse_with_regex(text: str, session_context: dict | None = None) -> dict:
 
     # License mention
     license_keywords = ["cert", "license", "certified", "certification", "heo",
-                        "nccco", "cdl", "operator cert"]
+                        "nccco", "cdl", "operator cert", "class a", "class b"]
     license_mentioned = any(kw in lower for kw in license_keywords)
 
     # Determine intent in regex fallback
@@ -283,7 +312,11 @@ def _parse_with_regex(text: str, session_context: dict | None = None) -> dict:
         intent = "greeting"
     elif lower in ("thanks", "thank you", "thx", "appreciate it", "great thanks", "sounds good", "perfect"):
         intent = "gratitude"
-    elif any(kw in lower for kw in ["what do you have", "what can i rent", "what equipment", "catalog", "fleet", "where are you"]):
+    elif any(kw in lower for kw in [
+        "what do you have", "what all", "what equipment", "catalog", "fleet", "where are you",
+        "earthmoving", "lifting", "aerial", "compaction", "what do you mean", "what does",
+        "why do you need", "how much is", "do you provide", "do you have"
+    ]):
         intent = "general_question"
 
     # Contractor name — hard to regex, leave None
@@ -889,8 +922,8 @@ Your mission:
 Write the exact message the assistant should send to the user based on the context and operational state below.
 Rules:
 1. GREETING: Warmly welcome the customer, introduce yourself as Alex from Cymonic Rentals, and ask how you can help with their job site equipment needs.
-2. GENERAL_QUESTION: Answer accurately using our fleet data above. Keep it concise, helpful, and invite them to explore specific machines.
-3. REQUEST_INFO: Enthusiastically confirm equipment interest and stock availability, acknowledge any details they gave, and conversationally ask for the missing details (e.g. rental duration, start date, site access, or contractor company name) so you can issue a firm quote.
+2. GENERAL_QUESTION: Answer accurately using our fleet data above. If the customer asked about a machinery category (earthmoving, aerial, lifting, compaction, power), list the specific matching machines with their day rates and availability. If they asked about license requirements (Class A or B), explain clearly that Class A/B refers to heavy equipment operator certifications needed for safe operation. Keep it concise, helpful, and invite them to explore specific machines.
+3. REQUEST_INFO: Enthusiastically confirm equipment interest and stock availability. CRITICAL: If the customer asked a question (e.g. what Class A license means, or explained that their start date is tentative / not confirmed), FIRST directly answer their question in a helpful, conversational, and reassuring way. Then conversationally ask for whatever remaining missing details (e.g. rental duration, start date, site access, or contractor company name) are needed so you can issue a firm quote.
 4. AUTO_QUOTE: Warmly congratulate the contractor! Clearly summarize the rental terms (machine, duration, start date, contractor name, loyalty discount if any), state the total price clearly, and ask if they'd like to confirm the booking.
 5. MANUAL_REVIEW: Be courteous and reassuring. Explain professionally that because of specific operational/safety requirements (such as crane site clearance, heavy hauling route survey, or account verification), our operations team is preparing an urgent review to confirm availability.
 6. GRATITUDE: Acknowledge politely and offer further assistance.
@@ -989,8 +1022,15 @@ def _generate_conversational_reply(
     elif decision == "REQUEST_INFO" and missing_info:
         missing_str = ", ".join(missing_info.get("missing_fields", ["additional details"]))
         equip_name = equipment["name"] if equipment is not None else "equipment"
+        lower_in = user_input.lower()
+        prefix = ""
+        if "class a" in lower_in or "class b" in lower_in or "license" in lower_in:
+            prefix = "A Class A license is a heavy equipment operator certification required for safe operation of this machine. "
+        elif "not confirmed" in lower_in or "tentative" in lower_in:
+            prefix = "No problem if your start date is tentative—we can prepare an initial reservation hold! "
+
         return (
-            f"We'd love to help you with the {equip_name}! To lock in your reservation and pricing, "
+            f"{prefix}To lock in your reservation and pricing for the {equip_name}, "
             f"could you provide your {missing_str}?"
         )
     elif decision == "MANUAL_REVIEW" and review_ticket:
@@ -999,7 +1039,25 @@ def _generate_conversational_reply(
             "our operations team is conducting an urgent review of this request. "
             "A rental coordinator will follow up with you shortly."
         )
-    elif decision == "UNRECOGNIZED":
+    elif decision in ("UNRECOGNIZED", "GENERAL_QUESTION", "general_question"):
+        lower_in = user_input.lower()
+        if "earthmoving" in lower_in or "earth moving" in lower_in:
+            return (
+                "For earthmoving, we carry the JCB 3CX Backhoe ($450/day), Caterpillar D6 Dozer ($850/day), "
+                "Komatsu PC210 Excavator ($620/day), and Volvo A40G Hauler ($1,100/day). Which machine would you like a quote for?"
+            )
+        elif "aerial" in lower_in or "lift" in lower_in:
+            return (
+                "For aerial and lifting, we carry the Genie Z-45 Boom Lift ($320/day), "
+                "Grove GMK3050 Crane ($1,200/day), and Skytrak 6034 Telehandler ($550/day). Which one fits your project?"
+            )
+        elif "compaction" in lower_in:
+            return "For compaction, we offer the Multiquip Plate Compactor ($150/day, 8 available). How many days will you need it?"
+        elif "power" in lower_in or "generator" in lower_in or "compressor" in lower_in:
+            return (
+                "For power and compressed air, we have the Sullair 185 Portable Generator ($280/day) "
+                "and Ingersoll Rand Air Compressor ($210/day). Would you like to reserve one?"
+            )
         return (
             "We carry earthmoving, lifting, aerial, compaction, and power generation equipment. "
             "Could you specify the machine name you're looking for, such as our backhoes, dozers, or excavators?"
