@@ -6,3 +6,10 @@ timestamp,inquiry_id,contractor_name,equipment_name,score,decision,total_quote,r
 2026-09-05 14:00:40,REQ005,,Grove GMK3050 Crane,51,REQUEST_INFO,,availability 30/30; completeness 5/20; customer trust 5/25; liability risk 3/15; timing 8/10. Final score 51/100 → REQUEST_INFO.
 2026-09-05 14:01:02,REQ006,,,,UNRECOGNIZED,,"1. Parsed inquiry but could not identify specific machine in fleet. 2. Equipment requested: 'crane, elevator' 3. Action: Naturally guided customer toward our available machinery categories."
 2026-09-05 14:01:28,REQ007,,Genie Z-45 Boom Lift,28,MANUAL_REVIEW,,availability 0/30; completeness 5/20; customer trust 5/25; liability risk 10/15; timing 8/10. Final score 28/100 → MANUAL_REVIEW.
+2026-09-05 14:07:37,REQ008,,Grove GMK3050 Crane,36,REQUEST_INFO,,availability 20/30; completeness 0/20; customer trust 5/25; liability risk 3/15; timing 8/10. Final score 36/100 → REQUEST_INFO.
+2026-09-05 14:07:48,REQ009,,Grove GMK3050 Crane,36,REQUEST_INFO,,availability 20/30; completeness 0/20; customer trust 5/25; liability risk 3/15; timing 8/10. Final score 36/100 → REQUEST_INFO.
+2026-09-05 14:08:04,REQ010,,Grove GMK3050 Crane,36,REQUEST_INFO,,availability 20/30; completeness 0/20; customer trust 5/25; liability risk 3/15; timing 8/10. Final score 36/100 → REQUEST_INFO.
+2026-09-05 14:15:10,REQ011,,,,IN_CONVERSATION,,1. Recognized greeting from customer. 2. Responded with friendly introductory welcome and offered machinery assistance.
+2026-09-05 14:15:58,REQ012,,Grove GMK3050 Crane,74,AUTO_QUOTE,2802.60,availability 30/30; completeness 20/20; customer trust 13/25; liability risk 3/15; timing 8/10. Final score 74/100 → AUTO_QUOTE.
+2026-09-05 14:16:22,REQ013,,Grove GMK3050 Crane,74,AUTO_QUOTE,2802.60,availability 30/30; completeness 20/20; customer trust 13/25; liability risk 3/15; timing 8/10. Final score 74/100 → AUTO_QUOTE.
+2026-09-05 14:16:39,REQ014,,Grove GMK3050 Crane,74,AUTO_QUOTE,2802.60,availability 30/30; completeness 20/20; customer trust 13/25; liability risk 3/15; timing 8/10. Final score 74/100 → AUTO_QUOTE.

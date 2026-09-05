@@ -391,38 +391,128 @@ def _normalise_parsed(parsed: dict, original_text: str) -> dict:
 # 2. match_equipment — fuzzy lookup against equipment.csv
 # ---------------------------------------------------------------------------
 
-def match_equipment(parsed: dict, equipment_df: pd.DataFrame) -> pd.Series | None:
-    """Match the parsed equipment_requested string to a row in equipment_df.
+FLEET_ALTERNATIVES = {
+    "elevator": "Skytrak 6034 Telehandler (for material lifting up to 34 ft) or Genie Z-45 Boom Lift (for aerial personnel access)",
+    "elevatpr": "Skytrak 6034 Telehandler (for material lifting up to 34 ft) or Genie Z-45 Boom Lift (for aerial personnel access)",
+    "elavator": "Skytrak 6034 Telehandler (for material lifting up to 34 ft) or Genie Z-45 Boom Lift (for aerial personnel access)",
+    "lift": "Genie Z-45 Boom Lift (aerial) or Skytrak 6034 Telehandler (material lifting)",
+    "forklift": "Skytrak 6034 Telehandler (rough-terrain telescopic forklift, 3 units available at $550/day)",
+    "scissor lift": "Genie Z-45 Boom Lift (aerial boom lift)",
+    "cherry picker": "Genie Z-45 Boom Lift (aerial boom lift)",
+    "man lift": "Genie Z-45 Boom Lift (aerial boom lift)",
+    "dumper": "Volvo A40G Hauler (heavy articulated hauler, 1 available at $1,100/day)",
+    "dump truck": "Volvo A40G Hauler (articulated hauler, 1 available at $1,100/day)",
+    "truck": "Volvo A40G Hauler (articulated hauler, 1 available at $1,100/day)",
+    "roller": "Multiquip Plate Compactor (sub-base compaction, 8 available at $150/day)",
+    "tamper": "Multiquip Plate Compactor (sub-base compaction, 8 available at $150/day)",
+    "trencher": "JCB 3CX Backhoe or Komatsu PC210 Excavator (trenching & digging)",
+    "loader": "JCB 3CX Backhoe (front loader bucket, 3 available at $450/day)",
+    "bobcat": "JCB 3CX Backhoe or Komatsu PC210 Excavator",
+    "skid steer": "JCB 3CX Backhoe or Komatsu PC210 Excavator",
+    "jackhammer": "Ingersoll Rand Air Compressor (powers pneumatic tools and hammers, 5 available at $210/day)",
+    "air tool": "Ingersoll Rand Air Compressor (5 available at $210/day)",
+    "lighting": "Sullair 185 Portable Generator (powers mobile job-site light towers, 7 available at $280/day)",
+    "light tower": "Sullair 185 Portable Generator (powers mobile job-site light towers, 7 available at $280/day)",
+}
 
-    Uses substring matching against the 'name' column (case-insensitive).
-    Returns the best-matching row as a Series, or None.
+
+def find_fleet_alternatives(item_name: str) -> str:
+    """Recommend an alternative machine from the fleet for an unlisted item."""
+    item_clean = item_name.lower().strip()
+    for key, alt in FLEET_ALTERNATIVES.items():
+        if key in item_clean or item_clean in key:
+            return alt
+    return (
+        "We specialize in heavy Earthmoving (Backhoes, Dozers, Excavators), "
+        "Lifting & Material Handling (Grove GMK3050 Cranes, Skytrak Telehandlers), "
+        "Aerial Boom Lifts, Hauling (Volvo A40G), Compaction, and Mobile Power."
+    )
+
+
+def match_all_equipment(
+    parsed: dict,
+    equipment_df: pd.DataFrame,
+    session_context: dict | None = None,
+) -> tuple[pd.Series | None, list[pd.Series], list[str], dict[str, str]]:
+    """Match single or multiple equipment requests against equipment_df.
+
+    Returns:
+        primary_equipment: The first matched pd.Series or None if none matched.
+        matched_list: List of all matched pd.Series in fleet.
+        unavailable_list: List of requested item strings not carried in fleet.
+        alternatives: Dict mapping unavailable item -> recommended fleet alternative.
     """
     requested = parsed.get("equipment_requested")
+    if not requested and session_context:
+        requested = session_context.get("equipment_requested") or session_context.get("equipment_name")
+
     if not requested:
-        return None
+        return None, [], [], {}
 
-    req_lower = requested.lower()
-    best_match = None
-    best_score = 0
+    req_str = str(requested)
+    # Split multiple items by commas, 'and', 'plus', '&', 'also'
+    raw_pieces = re.split(r'[,&;]|\band\b|\balso\b|\bplus\b', req_str, flags=re.IGNORECASE)
+    pieces = [p.strip() for p in raw_pieces if p.strip() and len(re.findall(r'[a-zA-Z0-9]+', p)) > 0]
 
-    for _, row in equipment_df.iterrows():
-        name_lower = row["name"].lower()
-        # Exact substring match
-        if req_lower in name_lower or name_lower in req_lower:
-            score = len(name_lower)
-            if score > best_score:
-                best_score = score
-                best_match = row
+    matched_list: list[pd.Series] = []
+    matched_ids = set()
+    unavailable_list: list[str] = []
+    alternatives: dict[str, str] = {}
+
+    for piece in pieces:
+        piece_lower = piece.lower()
+        piece_tokens = set(re.findall(r'[a-zA-Z0-9]+', piece_lower))
+        piece_match = None
+        best_score = 0
+
+        for _, row in equipment_df.iterrows():
+            name_lower = str(row["name"]).lower()
+            name_tokens = set(re.findall(r'[a-zA-Z0-9]+', name_lower))
+
+            if piece_lower in name_lower or name_lower in piece_lower:
+                score = len(name_lower) * 10
+                if score > best_score:
+                    best_score = score
+                    piece_match = row
+            else:
+                overlap = len(piece_tokens & name_tokens)
+                if overlap > 0:
+                    score = overlap * 5
+                    if score > best_score:
+                        best_score = score
+                        piece_match = row
+
+        if piece_match is not None:
+            if piece_match["equipment_id"] not in matched_ids:
+                matched_ids.add(piece_match["equipment_id"])
+                matched_list.append(piece_match)
         else:
-            # Token overlap
-            req_tokens = set(req_lower.split())
-            name_tokens = set(name_lower.split())
-            overlap = len(req_tokens & name_tokens)
-            if overlap > best_score:
-                best_score = overlap
-                best_match = row
+            stop_words = {"need", "also", "want", "have", "would", "like", "give", "item", "the", "a", "an", "for"}
+            meaningful_tokens = [t for t in piece_tokens if t not in stop_words]
+            if meaningful_tokens:
+                unavail_name = " ".join(meaningful_tokens).title()
+                if unavail_name not in unavailable_list:
+                    unavailable_list.append(unavail_name)
+                    alternatives[unavail_name] = find_fleet_alternatives(piece)
 
-    return best_match
+    primary_equipment = matched_list[0] if matched_list else None
+    return primary_equipment, matched_list, unavailable_list, alternatives
+
+
+def match_equipment(
+    parsed: dict,
+    equipment_df: pd.DataFrame,
+    session_context: dict | None = None,
+) -> pd.Series | None:
+    """Match the parsed equipment_requested string to a row in equipment_df.
+
+    Returns primary matched Series or None if no items in fleet matched.
+    """
+    primary, _, _, _ = match_all_equipment(parsed, equipment_df, session_context=session_context)
+    return primary
+
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -949,7 +1039,14 @@ Rules:
 4. AUTO_QUOTE: Warmly congratulate the contractor! Clearly summarize the rental terms (machine, duration, start date, contractor name, loyalty discount if any), state the total price clearly, and ask if they'd like to confirm the booking.
 5. MANUAL_REVIEW: Be courteous and reassuring. Explain professionally that because of specific operational/safety requirements (such as crane site clearance, heavy hauling route survey, or account verification), our operations team is preparing an urgent review to confirm availability.
 6. GRATITUDE: Acknowledge politely and offer further assistance.
-7. Keep the response concise, natural, and friendly (2 to 4 sentences). Never include markdown JSON, robot labels, or system headers in your conversational reply."""
+7. MULTIPLE ITEMS & UNAVAILABLE ITEMS (CRITICAL):
+   - When the user asks for multiple items (e.g. crane and elevator, or backhoe and dozer):
+     a) Confirm and list ALL available machines requested (mentioning machine name, daily rate, and units in stock).
+     b) If ANY requested item is NOT in our fleet (e.g. elevator, forklift): explicitly state that we do NOT carry that specific item in our fleet.
+     c) Proactively recommend the specified fleet alternative (e.g. Skytrak 6034 Telehandler or Genie Z-45 Boom Lift for vertical reach).
+     d) Ask how the customer would like to proceed (e.g. confirming dates for available machines or looking at the alternative).
+8. Keep the response concise, natural, and friendly (2 to 4 sentences). Never include markdown JSON, robot labels, or system headers in your conversational reply."""
+
 
 
 def _generate_conversational_reply(
@@ -963,6 +1060,9 @@ def _generate_conversational_reply(
     quote: dict | None = None,
     review_ticket: dict | None = None,
     missing_info: dict | None = None,
+    matched_equipment: list[pd.Series] | None = None,
+    unavailable_equipment: list[str] | None = None,
+    alternatives: dict[str, str] | None = None,
 ) -> str:
     """Generate a warm, natural, human-like dialogue response using Groq LLM (with template fallback)."""
     if groq_client is not None:
@@ -983,6 +1083,17 @@ def _generate_conversational_reply(
                 f"Equipment: {equip_str}\n"
                 f"Contractor: {contr_str}\n"
             )
+
+            if matched_equipment and len(matched_equipment) > 1:
+                items_str = "; ".join(f"{eq['name']} (${eq['daily_rate']}/day, {eq['units_available']} available)" for eq in matched_equipment)
+                state_summary += f"All Available Matching Machines: {items_str}\n"
+
+            if unavailable_equipment:
+                state_summary += f"Unavailable Items Requested (NOT in fleet): {', '.join(unavailable_equipment)}\n"
+
+            if alternatives:
+                alt_str = "; ".join(f"For {k}: recommend {v}" for k, v in alternatives.items())
+                state_summary += f"Recommended Fleet Alternatives: {alt_str}\n"
 
             if quote:
                 state_summary += (
@@ -1021,6 +1132,22 @@ def _generate_conversational_reply(
             return reply
         except Exception:
             pass
+
+    # High quality human fallback
+    if unavailable_equipment and not equipment:
+        unavail_names = ", ".join(unavailable_equipment)
+        alt_notes = ""
+        if alternatives:
+            alt_notes = " " + " ".join(f"For {k}, we recommend our {v}." for k, v in alternatives.items())
+        return f"We do not carry {unavail_names} in our rental fleet.{alt_notes} Could you clarify your project requirements so I can recommend the best machine from our catalog?"
+
+    if unavailable_equipment and equipment is not None:
+        unavail_names = ", ".join(unavailable_equipment)
+        alt_notes = ""
+        if alternatives:
+            alt_notes = " " + " ".join(f"For {k}, we recommend our {v}." for k, v in alternatives.items())
+        return f"We have the {equipment['name']} available at ${equipment['daily_rate']}/day ({equipment['units_available']} units in stock). Please note that we do not carry {unavail_names} in our fleet.{alt_notes} To finalize your quote for the {equipment['name']}, could you confirm your rental duration and start date?"
+
 
     # High quality human fallback
     if decision in ("GREETING", "greeting"):
@@ -1349,8 +1476,10 @@ def run_rental_agent(
             "is_followup": bool(session_context),
         }
 
-    # 3. Match equipment and contractor
-    equipment = match_equipment(parsed, equipment_df)
+    # 3. Match equipment and contractor (supports multiple items & alternatives)
+    equipment, matched_equipment, unavailable_equipment, alternatives = match_all_equipment(
+        parsed, equipment_df, session_context=session_context
+    )
     contractor = match_contractor(parsed, contractors_df, raw_text=user_input, session_context=session_context)
 
     is_followup = bool(
@@ -1360,25 +1489,32 @@ def run_rental_agent(
         )
     )
 
-    # 4. Handle unrecognized equipment
+    # 4. Handle unrecognized equipment (none of requested items in fleet)
     if equipment is None:
         msg = _generate_conversational_reply(
             user_input, "UNRECOGNIZED", parsed, None, contractor, None,
             chat_history=chat_history,
+            unavailable_equipment=unavailable_equipment,
+            alternatives=alternatives,
         )
         return {
             "decision": "UNRECOGNIZED",
             "message": msg,
             "reasoning": (
                 "🧠 Agent Thought Process:\n"
-                f"  1. Parsed inquiry but could not identify specific machine in fleet.\n"
-                f"  2. Equipment requested: '{parsed.get('equipment_requested', 'None detected')}'\n"
-                f"  3. Action: Naturally guided customer toward our available machinery categories."
+                f"  1. Parsed inquiry: '{parsed.get('equipment_requested', 'None detected')}'\n"
+                f"  2. Fleet check: No matching machines in active fleet.\n"
+                f"  3. Unavailable items: {', '.join(unavailable_equipment) if unavailable_equipment else 'None'}\n"
+                f"  4. Recommended alternatives: {'; '.join(alternatives.values()) if alternatives else 'General catalog'}\n"
+                f"  5. Action: Stated unavailable item and recommended suitable fleet alternatives."
             ),
             "scorecard": None,
             "parsed_fields": parsed,
             "equipment_name": None,
             "contractor_name": contractor["company_name"] if contractor is not None else None,
+            "matched_equipment": [],
+            "unavailable_equipment": unavailable_equipment,
+            "recommended_alternatives": alternatives,
             "session_context": session_context or parsed,
             "is_followup": is_followup,
         }
@@ -1410,7 +1546,14 @@ def run_rental_agent(
         quote=response.get("quote"),
         review_ticket=response.get("review_ticket"),
         missing_info=response.get("missing_info"),
+        matched_equipment=matched_equipment,
+        unavailable_equipment=unavailable_equipment,
+        alternatives=alternatives,
     )
+    response["matched_equipment"] = [eq["name"] for eq in matched_equipment]
+    response["unavailable_equipment"] = unavailable_equipment
+    response["recommended_alternatives"] = alternatives
+
 
     # 9. Add reasoning & multi-turn metadata
     response["reasoning"] = generate_reasoning_text(scorecard, decision, parsed, session_context=session_context)

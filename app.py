@@ -358,6 +358,17 @@ def render_result(result: dict):
         st.markdown(f"**Decision:** `{decision}` &nbsp;|&nbsp; **Score:** `{total_score} / {max_score}`")
         if parsed_fields:
             render_parsed_fields(parsed_fields, equipment_name, contractor_name)
+        matched = result.get("matched_equipment", [])
+        if matched and len(matched) > 1:
+            st.markdown(f"**All Matched Fleet Machines:** {', '.join(matched)}")
+        unavail = result.get("unavailable_equipment", [])
+        if unavail:
+            st.markdown(f"**Unavailable Items (Not in Fleet):** {', '.join(unavail)}")
+        alts = result.get("recommended_alternatives", {})
+        if alts:
+            st.markdown("**Recommended Fleet Alternatives:**")
+            for k, v in alts.items():
+                st.markdown(f"- *{k}*: {v}")
         if scorecard:
             render_scorecard(scorecard)
         if decision == "MANUAL_REVIEW":
