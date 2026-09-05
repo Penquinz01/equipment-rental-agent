@@ -1,0 +1,11 @@
+contractor_id,company_name,tier,license_held,avg_payment_days,years_in_business,insurance_valid
+C001,Smith & Sons Construction,Gold,Class A,15,12,Yes
+C002,Greenfield Builders,Silver,Class A,28,6,Yes
+C003,Metro Earth Movers,Gold,Class B,18,9,Yes
+C004,Prime Site Prep,Bronze,None,45,2,No
+C005,Harbor Heavy Haul,Silver,Class A,22,7,Yes
+C006,Crane Pro Services,Gold,Class B,12,15,Yes
+C007,Weekend Warriors,Bronze,None,60,1,No
+C008,Urban Infrastructure Ltd,Silver,Class B,30,8,Yes
+C009,Precision Grade Works,Gold,Class A,10,14,Yes
+C010,Reliable Rentals Inc,Silver,None,25,4,Yes

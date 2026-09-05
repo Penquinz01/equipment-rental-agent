@@ -1,0 +1,11 @@
+equipment_id,name,category,daily_rate,total_units,units_available,required_license,site_access_needed,min_rental_days
+E001,JCB 3CX Backhoe,Earthmoving,450,5,3,Class A,Yes,1
+E002,Caterpillar D6 Dozer,Earthmoving,850,2,1,Class A,Yes,2
+E003,Komatsu PC210 Excavator,Earthmoving,620,4,4,Class B,Yes,1
+E004,Genie Z-45 Boom Lift,Aerial,320,6,0,None,No,1
+E005,Ingersoll Rand Air Compressor,Compaction,210,8,5,None,No,1
+E006,Volvo A40G Hauler,Hauling,1100,1,1,Class A,Yes,3
+E007,Multiquip Plate Compactor,Compaction,150,10,8,None,No,0
+E008,Grove GMK3050 Crane,Lifting,1200,2,2,Class B,Yes,2
+E009,Skytrak 6034 Telehandler,Material Handling,550,3,3,Class B,Yes,1
+E010,Sullair 185 Portable Generator,Power,280,7,7,None,No,1
