@@ -44,8 +44,12 @@ st.markdown("""
     
     .block-container {
         padding-top: 1.5rem !important;
-        padding-bottom: 2rem !important;
+        padding-bottom: 9rem !important;
         max-width: 1200px !important;
+    }
+
+    [data-testid="stChatMessage"] {
+        margin-bottom: 0.85rem;
     }
 
     /* Header Component */
@@ -495,6 +499,9 @@ for msg in st.session_state.messages:
             else:
                 st.write(msg.get("content", ""))
 
+
+# Spacing buffer to ensure the fixed chat input bar never overlaps messages
+st.markdown("<div style='height: 60px;'></div>", unsafe_allow_html=True)
 
 # ==============================================================================
 # 9. CHAT INPUT & BACKEND INTEGRATION EXECUTION

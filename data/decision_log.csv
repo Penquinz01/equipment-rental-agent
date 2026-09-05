@@ -13,3 +13,6 @@ timestamp,inquiry_id,contractor_name,equipment_name,score,decision,total_quote,r
 2026-09-05 14:15:58,REQ012,,Grove GMK3050 Crane,74,AUTO_QUOTE,2802.60,availability 30/30; completeness 20/20; customer trust 13/25; liability risk 3/15; timing 8/10. Final score 74/100 → AUTO_QUOTE.
 2026-09-05 14:16:22,REQ013,,Grove GMK3050 Crane,74,AUTO_QUOTE,2802.60,availability 30/30; completeness 20/20; customer trust 13/25; liability risk 3/15; timing 8/10. Final score 74/100 → AUTO_QUOTE.
 2026-09-05 14:16:39,REQ014,,Grove GMK3050 Crane,74,AUTO_QUOTE,2802.60,availability 30/30; completeness 20/20; customer trust 13/25; liability risk 3/15; timing 8/10. Final score 74/100 → AUTO_QUOTE.
+2026-09-05 14:24:47,REQ015,,,,IN_CONVERSATION,,1. Recognized greeting from customer. 2. Responded with friendly introductory welcome and offered machinery assistance.
+2026-09-05 14:24:59,REQ016,,Grove GMK3050 Crane,36,REQUEST_INFO,,availability 20/30; completeness 0/20; customer trust 5/25; liability risk 3/15; timing 8/10. Final score 36/100 → REQUEST_INFO.
+2026-09-05 14:25:23,REQ017,,Grove GMK3050 Crane,49,REQUEST_INFO,,availability 20/30; completeness 5/20; customer trust 13/25; liability risk 3/15; timing 8/10. Final score 49/100 → REQUEST_INFO.
