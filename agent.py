@@ -193,7 +193,7 @@ def _parse_with_llm(
 
         # Append recent chat history (last 6 messages)
         if chat_history:
-            for msg in chat_history[-6:]:
+            for msg in chat_history[-10:]:
                 if isinstance(msg, dict) and msg.get("content"):
                     role = msg.get("role", "user")
                     if role not in ("system", "user", "assistant"):
@@ -558,8 +558,14 @@ def calculate_score(
     # --- Factor 3: Customer Trust (max 25) ---
     trust_max = SCORING_WEIGHTS["customer_trust"]
     if contractor is None:
-        trust_score = 5
-        trust_reason = "Contractor not identified — treated as unknown."
+        # Walk-in customer: if they provided a company name, give them moderate trust
+        mentioned_name = parsed.get("contractor_name_mentioned")
+        if mentioned_name:
+            trust_score = 13
+            trust_reason = f"Walk-in customer: '{mentioned_name}' (not in database — new account)."
+        else:
+            trust_score = 5
+            trust_reason = "Contractor not identified — treated as unknown."
     else:
         tier = str(contractor.get("tier", "Unrated"))
         base = TIER_SCORES.get(tier, 8)
@@ -702,9 +708,22 @@ def make_decision(
 
     Avoids premature MANUAL_REVIEW for customers who are simply in the discovery
     phase and haven't provided their company name or rental dates yet.
+    Supports walk-in customers who provide full details but aren't in the database.
     """
     if total_score >= THRESHOLD_AUTO_QUOTE:
         return "AUTO_QUOTE"
+
+    # Walk-in customer path: if all required info is provided and score >= 65,
+    # approve the quote even though the contractor isn't in the CSV database.
+    if total_score >= 65 and parsed and scorecard:
+        completeness = scorecard.get("completeness", {})
+        if completeness.get("score", 0) >= completeness.get("max", 20):
+            # All fields filled — check if this is just a new-customer trust gap
+            if (contractor is None
+                    and parsed.get("contractor_name_mentioned")
+                    and parsed.get("duration_days") is not None
+                    and parsed.get("start_date") is not None):
+                return "AUTO_QUOTE"
 
     # Red Flag 1: Equipment completely out of stock
     if equipment is not None and int(equipment.get("units_available", 1)) <= 0:
@@ -840,7 +859,10 @@ def _build_info_request(parsed: dict, equipment: pd.Series | None) -> dict:
         missing_fields.append("site access details (surface type, clearance, etc.)")
 
     if not missing_fields:
-        missing_fields.append("additional details to verify your request")
+        # All fields are provided — don't generate a zombie info request.
+        # Return empty missing_fields so the decision logic can proceed
+        # to AUTO_QUOTE or MANUAL_REVIEW instead of looping.
+        pass
 
     numbered = "\n".join(f"  ({i+1}) {f}" for i, f in enumerate(missing_fields))
     message = (
@@ -977,7 +999,7 @@ def _generate_conversational_reply(
                 {"role": "system", "content": AGENTIC_REPLY_PROMPT},
             ]
             if chat_history:
-                for msg in chat_history[-4:]:
+                for msg in chat_history[-8:]:
                     role = msg.get("role", "user")
                     if role in ("user", "assistant"):
                         messages.append({"role": role, "content": str(msg.get("content", ""))})
@@ -1392,7 +1414,21 @@ def run_rental_agent(
 
     # 9. Add reasoning & multi-turn metadata
     response["reasoning"] = generate_reasoning_text(scorecard, decision, parsed, session_context=session_context)
-    response["session_context"] = parsed
+    # Build rich session context: merge new parsed fields into existing context
+    # so fields from earlier turns (equipment, duration, company name) are never lost.
+    new_context = dict(session_context) if session_context else {}
+    for key, value in parsed.items():
+        if value is not None:
+            new_context[key] = value
+    # Persist matched entity names for downstream use
+    if equipment is not None:
+        new_context["equipment_name"] = equipment["name"]
+    if contractor is not None:
+        new_context["contractor_name"] = contractor["company_name"]
+        new_context["matched_contractor_id"] = contractor.get("contractor_id")
+    elif parsed.get("contractor_name_mentioned"):
+        new_context["contractor_name"] = parsed["contractor_name_mentioned"]
+    response["session_context"] = new_context
     response["is_followup"] = is_followup
 
     return response
