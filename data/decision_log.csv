@@ -16,3 +16,7 @@ timestamp,inquiry_id,contractor_name,equipment_name,score,decision,total_quote,r
 2026-09-05 14:24:47,REQ015,,,,IN_CONVERSATION,,1. Recognized greeting from customer. 2. Responded with friendly introductory welcome and offered machinery assistance.
 2026-09-05 14:24:59,REQ016,,Grove GMK3050 Crane,36,REQUEST_INFO,,availability 20/30; completeness 0/20; customer trust 5/25; liability risk 3/15; timing 8/10. Final score 36/100 → REQUEST_INFO.
 2026-09-05 14:25:23,REQ017,,Grove GMK3050 Crane,49,REQUEST_INFO,,availability 20/30; completeness 5/20; customer trust 13/25; liability risk 3/15; timing 8/10. Final score 49/100 → REQUEST_INFO.
+2026-09-05 14:27:22,REQ018,,,,IN_CONVERSATION,,1. Recognized greeting from customer. 2. Responded with friendly introductory welcome and offered machinery assistance.
+2026-09-05 14:27:54,REQ019,,,,UNRECOGNIZED,,1. Parsed inquiry: 'forklift' 2. Fleet check: No matching machines in active fleet. 3. Unavailable items: Forklift 4. Recommended alternatives: Genie Z-45 Boom Lift (aerial) or Skytrak 6034 Telehandler (material lifting) 5. Action: Stated unavailable item and recommended suitable fleet alternatives.
+2026-09-05 14:28:07,REQ020,,Skytrak 6034 Telehandler,75,AUTO_QUOTE,2130.30,availability 30/30; completeness 20/20; customer trust 13/25; liability risk 7/15; timing 5/10. Final score 75/100 → AUTO_QUOTE.
+2026-09-05 14:28:14,REQ021,janbaas.ind,telehandler,,IN_CONVERSATION,,1. Customer expressed thanks / acknowledgement. 2. Acknowledged politely and affirmed readiness for next steps.
