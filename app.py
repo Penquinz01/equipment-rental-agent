@@ -13,6 +13,16 @@ except Exception as import_err:
     BACKEND_CONNECTED = False
     BACKEND_ERROR_MSG = str(import_err)
 
+# Person D Integration Contract
+try:
+    from data_loader import log_decision
+    from utils import export_log_as_text
+    LOGGING_CONNECTED = True
+except Exception:
+    log_decision = None
+    export_log_as_text = None
+    LOGGING_CONNECTED = False
+
 # ==============================================================================
 # 2. PAGE CONFIGURATION
 # ==============================================================================
@@ -425,6 +435,16 @@ with st.sidebar:
         ]
         st.rerun()
 
+    # Person D Export Chat Log Button
+    if LOGGING_CONNECTED and export_log_as_text is not None:
+        st.download_button(
+            "📥 Export Chat Log",
+            data=export_log_as_text(),
+            file_name="rental_audit_log.txt",
+            mime="text/plain",
+            use_container_width=True
+        )
+
     st.divider()
 
     # Quick Test Prompts (Exact Judge Test Prompts)
@@ -529,6 +549,12 @@ if user_input:
                             "role": "assistant",
                             "result": result
                         })
+                        # Person D Decision Logging Integration
+                        if LOGGING_CONNECTED and log_decision is not None:
+                            try:
+                                log_decision(user_input, result)
+                            except Exception:
+                                pass  # Ensure logging failure never blocks UI rendering
                     else:
                         st.error("Invalid response format received from backend agent.")
                 except Exception as err:

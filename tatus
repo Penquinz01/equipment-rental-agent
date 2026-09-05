@@ -1,0 +1,51 @@
+[1mdiff --git a/app.py b/app.py[m
+[1mindex 466820a..6457aaa 100644[m
+[1m--- a/app.py[m
+[1m+++ b/app.py[m
+[36m@@ -13,6 +13,16 @@[m [mexcept Exception as import_err:[m
+     BACKEND_CONNECTED = False[m
+     BACKEND_ERROR_MSG = str(import_err)[m
+ [m
+[32m+[m[32m# Person D Integration Contract[m
+[32m+[m[32mtry:[m
+[32m+[m[32m    from data_loader import log_decision[m
+[32m+[m[32m    from utils import export_log_as_text[m
+[32m+[m[32m    LOGGING_CONNECTED = True[m
+[32m+[m[32mexcept Exception:[m
+[32m+[m[32m    log_decision = None[m
+[32m+[m[32m    export_log_as_text = None[m
+[32m+[m[32m    LOGGING_CONNECTED = False[m
+[32m+[m
+ # ==============================================================================[m
+ # 2. PAGE CONFIGURATION[m
+ # ==============================================================================[m
+[36m@@ -425,6 +435,16 @@[m [mwith st.sidebar:[m
+         ][m
+         st.rerun()[m
+ [m
+[32m+[m[32m    # Person D Export Chat Log Button[m
+[32m+[m[32m    if LOGGING_CONNECTED and export_log_as_text is not None:[m
+[32m+[m[32m        st.download_button([m
+[32m+[m[32m            "📥 Export Chat Log",[m
+[32m+[m[32m            data=export_log_as_text(),[m
+[32m+[m[32m            file_name="rental_audit_log.txt",[m
+[32m+[m[32m            mime="text/plain",[m
+[32m+[m[32m            use_container_width=True[m
+[32m+[m[32m        )[m
+[32m+[m
+     st.divider()[m
+ [m
+     # Quick Test Prompts (Exact Judge Test Prompts)[m
+[36m@@ -529,6 +549,12 @@[m [mif user_input:[m
+                             "role": "assistant",[m
+                             "result": result[m
+                         })[m
+[32m+[m[32m                        # Person D Decision Logging Integration[m
+[32m+[m[32m                        if LOGGING_CONNECTED and log_decision is not None:[m
+[32m+[m[32m                            try:[m
+[32m+[m[32m                                log_decision(user_input, result)[m
+[32m+[m[32m                            except Exception:[m
+[32m+[m[32m                                pass  # Ensure logging failure never blocks UI rendering[m
+                     else:[m
+                         st.error("Invalid response format received from backend agent.")[m
+                 except Exception as err:[m
