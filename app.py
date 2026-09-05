@@ -13,6 +13,16 @@ except Exception as import_err:
     BACKEND_CONNECTED = False
     BACKEND_ERROR_MSG = str(import_err)
 
+# Person D Integration Contract
+try:
+    from data_loader import log_decision
+    from utils import export_log_as_text
+    LOGGING_CONNECTED = True
+except Exception:
+    log_decision = None
+    export_log_as_text = None
+    LOGGING_CONNECTED = False
+
 # ==============================================================================
 # 2. PAGE CONFIGURATION
 # ==============================================================================
@@ -32,18 +42,10 @@ st.markdown("""
     footer { visibility: hidden; }
     header[data-testid="stHeader"] { background: transparent; }
     
-    html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"], .main {
-        overflow-y: auto !important;
-        height: auto !important;
-        max-height: none !important;
-    }
-
     .block-container {
         padding-top: 1.5rem !important;
-        padding-bottom: 6rem !important;
+        padding-bottom: 2rem !important;
         max-width: 1200px !important;
-        overflow: visible !important;
-        height: auto !important;
     }
 
     /* Header Component */
@@ -220,21 +222,19 @@ if "messages" not in st.session_state:
 if "pending_prompt" not in st.session_state:
     st.session_state.pending_prompt = None
 
+if "session_context" not in st.session_state:
+    st.session_state.session_context = {}
+
 # ==============================================================================
 # 5. RENDER FUNCTIONS FOR BACKEND CONTRACT RESULTS
 # ==============================================================================
-def get_numeric_score(val, default=0):
-    """Safely extracts a numeric score from dictionary, int/float, or numeric string."""
+def _extract_score_num(val):
     if isinstance(val, dict):
-        val = val.get("score", default)
-    if isinstance(val, (int, float)):
-        return val
-    if isinstance(val, str):
-        try:
-            return float(val) if "." in val else int(val)
-        except ValueError:
-            return default
-    return default
+        return val.get("score", 0)
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return 0
 
 
 def render_scorecard(scorecard: dict):
@@ -244,13 +244,13 @@ def render_scorecard(scorecard: dict):
     
     st.markdown("<div class='card-section-title'>📊 Qualification Scorecard</div>", unsafe_allow_html=True)
     
-    avail = get_numeric_score(scorecard.get("availability"), 0)
-    comp = get_numeric_score(scorecard.get("completeness"), 0)
-    trust = get_numeric_score(scorecard.get("customer_trust"), 0)
-    risk = get_numeric_score(scorecard.get("liability_risk"), 0)
-    timing = get_numeric_score(scorecard.get("timing"), 0)
-    total = get_numeric_score(scorecard.get("total"), 0)
-    max_total = get_numeric_score(scorecard.get("max_total"), 100)
+    avail = _extract_score_num(scorecard.get("availability"))
+    comp = _extract_score_num(scorecard.get("completeness"))
+    trust = _extract_score_num(scorecard.get("customer_trust"))
+    risk = _extract_score_num(scorecard.get("liability_risk"))
+    timing = _extract_score_num(scorecard.get("timing"))
+    total = scorecard.get("total", 0)
+    max_total = scorecard.get("max_total", 100)
 
     col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
@@ -300,7 +300,7 @@ def render_parsed_fields(parsed: dict, equipment_name=None, contractor_name=None
 
 
 def render_result(result: dict):
-    """Renders the complete result dictionary returned by Person B's run_rental_agent()."""
+    """Renders the natural chat response in the conversation, placing technical scores in a collapsed log."""
     decision = result.get("decision", "UNRECOGNIZED")
     reasoning = result.get("reasoning", "")
     scorecard = result.get("scorecard", {})
@@ -308,42 +308,27 @@ def render_result(result: dict):
     equipment_name = result.get("equipment_name")
     contractor_name = result.get("contractor_name")
 
-    total_score = get_numeric_score(scorecard.get("total"), "N/A") if scorecard else "N/A"
-    max_score = get_numeric_score(scorecard.get("max_total"), 100) if scorecard else 100
+    total_score = scorecard.get("total", "N/A") if scorecard else "N/A"
+    max_score = scorecard.get("max_total", 100) if scorecard else 100
 
-    # Header Badges & Colors
-    if decision == "AUTO_QUOTE":
-        badge_html = '<span class="badge badge-auto-quote">⚡ AUTO-QUOTE APPROVED</span>'
-        score_color = "#4ade80"
-    elif decision == "REQUEST_INFO":
-        badge_html = '<span class="badge badge-request-info">📋 REQUEST MORE INFO</span>'
-        score_color = "#fbbf24"
-    elif decision == "MANUAL_REVIEW":
-        badge_html = '<span class="badge badge-manual-review">⚠️ MANUAL REVIEW REQUIRED</span>'
-        score_color = "#f87171"
-    else: # UNRECOGNIZED
-        badge_html = '<span class="badge badge-unrecognized">❓ CLARIFICATION NEEDED</span>'
-        score_color = "#cbd5e1"
+    # 1. Primary Conversational Agent Message
+    agent_msg = result.get("message")
+    if not agent_msg:
+        if decision == "REQUEST_INFO":
+            missing_info = result.get("missing_info", {})
+            agent_msg = missing_info.get("message") if isinstance(missing_info, dict) else "We need a few additional details to proceed with your quote."
+        elif decision == "MANUAL_REVIEW":
+            agent_msg = "Thank you for the project details. Because this inquiry involves high-value equipment or specialized access conditions, our underwriting team is conducting a quick manual review."
+        elif decision == "AUTO_QUOTE":
+            agent_msg = "Great news! Your rental request has been approved. Here is your itemized quotation:"
+        else:
+            agent_msg = "How can I assist you with your equipment rental needs today?"
 
-    # Decision Card Wrapper
-    st.markdown(f"""
-    <div class="decision-card">
-        <div class="decision-header">
-            <div>{badge_html}</div>
-            <div class="score-container">
-                <span class="score-label">Qualification Score:</span>
-                <span class="score-value" style="color: {score_color};">{total_score} / {max_score}</span>
-            </div>
-        </div>
-    """, unsafe_allow_html=True)
+    st.markdown(agent_msg)
 
-    # 1. Display Request Understanding (parsed_fields)
-    render_parsed_fields(parsed_fields, equipment_name, contractor_name)
-
-    # 2. Display Decision-Specific Payload
+    # 2. Quotation Payload (Displayed when AUTO_QUOTE is approved)
     if decision == "AUTO_QUOTE":
         quote = result.get("quote", {})
-        st.success("✅ **Auto-Quote Approved** — Instant quotation calculated.")
         if quote:
             st.markdown(f"""
             <div class="quote-box">
@@ -363,60 +348,16 @@ def render_result(result: dict):
             </div>
             """, unsafe_allow_html=True)
 
-    elif decision == "REQUEST_INFO":
-        missing_info = result.get("missing_info", {})
-        msg = missing_info.get("message", "Additional details are required to complete this quotation.") if isinstance(missing_info, dict) else "Additional details required."
-        missing_fields = missing_info.get("missing_fields", []) if isinstance(missing_info, dict) else []
-
-        st.warning(f"📋 **Request More Information** — {msg}")
-        if missing_fields:
-            st.markdown('<div class="quote-box" style="border-color: rgba(245, 158, 11, 0.4);"><div class="card-section-title" style="color: #fbbf24; margin-top: 0;">Missing Information Items</div>', unsafe_allow_html=True)
-            if isinstance(missing_fields, list):
-                for mf in missing_fields:
-                    st.markdown(f'<div class="reason-item" style="color: #fbbf24;"><span>⚠️</span> <span>{mf}</span></div>', unsafe_allow_html=True)
-            elif isinstance(missing_fields, dict):
-                for k, v in missing_fields.items():
-                    st.markdown(f'<div class="reason-item" style="color: #fbbf24;"><span>⚠️</span> <span><strong>{k}:</strong> {v}</span></div>', unsafe_allow_html=True)
-            else:
-                st.markdown(f'<div class="reason-item" style="color: #fbbf24;"><span>⚠️</span> <span>{missing_fields}</span></div>', unsafe_allow_html=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-
     elif decision == "MANUAL_REVIEW":
         review_ticket = result.get("review_ticket", {})
-        if not isinstance(review_ticket, dict):
-            review_ticket = {}
-            
-        priority = review_ticket.get("priority", "Standard")
-        eq = review_ticket.get("equipment", equipment_name or "N/A")
-        cont = review_ticket.get("contractor", contractor_name or "N/A")
-        triggers = review_ticket.get("triggers", [])
-        recommendation = review_ticket.get("recommendation", "Assigned for manual risk evaluation.")
+        priority = review_ticket.get("priority", "Standard") if isinstance(review_ticket, dict) else "Standard"
+        st.info(f"📋 **Review Ticket Submitted** (Priority: {priority}) — Assigned for underwriter evaluation.")
 
-        st.error("⚠️ **Manual Review Required** — Request escalated to underwriter.")
-        st.markdown(f"""
-        <div class="quote-box" style="border-color: rgba(239, 68, 68, 0.4);">
-            <div class="card-section-title" style="color: #f87171; margin-top: 0;">Underwriter Review Ticket Details</div>
-            <div class="quote-row"><span>Priority Level:</span><strong>{priority}</strong></div>
-            <div class="quote-row"><span>Equipment Requested:</span><span>{eq}</span></div>
-            <div class="quote-row"><span>Contractor:</span><span>{cont}</span></div>
-            <div class="quote-row"><span>Recommended Action:</span><span>{recommendation}</span></div>
-        """, unsafe_allow_html=True)
-
-        if triggers:
-            st.markdown("<div class='card-section-title' style='color: #fca5a5;'>Risk Triggers Identified</div>", unsafe_allow_html=True)
-            if isinstance(triggers, list):
-                for t in triggers:
-                    st.markdown(f'<div class="reason-item" style="color: #fca5a5;"><span>🛑</span> <span>{t}</span></div>', unsafe_allow_html=True)
-            else:
-                st.markdown(f'<div class="reason-item" style="color: #fca5a5;"><span>🛑</span> <span>{triggers}</span></div>', unsafe_allow_html=True)
-
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    elif decision == "UNRECOGNIZED":
-        msg = result.get("message", "I couldn't identify the equipment you're looking for. Could you specify the machine name?")
-        st.info(f"❓ {msg}")
-
-    # 3. Scorecard Display
+    # 3. Technical Underwriting Log (Collapsed by default, preserving logs for judges/auditors)
+    with st.expander("🛠️ Decision & Underwriting Log", expanded=False):
+        st.markdown(f"**Decision:** `{decision}` &nbsp;|&nbsp; **Score:** `{total_score} / {max_score}`")
+        if parsed_fields:
+            render_parsed_fields(parsed_fields, equipment_name, contractor_name)
         matched = result.get("matched_equipment", [])
         if matched and len(matched) > 1:
             st.markdown(f"**All Matched Fleet Machines:** {', '.join(matched)}")
@@ -428,15 +369,20 @@ def render_result(result: dict):
             st.markdown("**Recommended Fleet Alternatives:**")
             for k, v in alts.items():
                 st.markdown(f"- *{k}*: {v}")
-    if scorecard:
-        render_scorecard(scorecard)
-
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    # 4. Renamed Expander for Thought Process & Scorecard Explanation
-    if reasoning:
-        with st.expander("Decision Explanation & Scorecard", expanded=False):
+        if scorecard:
+            render_scorecard(scorecard)
+        if decision == "MANUAL_REVIEW":
+            review_ticket = result.get("review_ticket", {})
+            if isinstance(review_ticket, dict):
+                triggers = review_ticket.get("triggers", [])
+                if triggers:
+                    st.markdown("**Risk Triggers:**")
+                    for t in triggers:
+                        st.markdown(f"- 🛑 {t}")
+        if reasoning:
+            st.markdown("**Chain-of-Thought Reasoning:**")
             st.markdown(reasoning)
+
 
 
 # ==============================================================================
@@ -448,7 +394,7 @@ with st.sidebar:
     st.divider()
 
     # Clear Chat Button
-    if st.button("🗑️ Clear Chat", key="btn_clear_chat", use_container_width=True, type="secondary"):
+    if st.button("🗑️ Clear Chat", use_container_width=True, type="secondary"):
         st.session_state.messages = [
             {
                 "role": "assistant",
@@ -456,24 +402,44 @@ with st.sidebar:
                 "content": "👋 Welcome to the **Equipment Rental Decision Agent**!\n\nSubmit your rental inquiry to receive an instant automated quotation, missing information request, or underwriter review routing.\n\n*Try typing a request or select a quick test prompt from the sidebar.*"
             }
         ]
+        st.session_state.session_context = {}
         st.rerun()
+
+    # Active Multi-Turn Session State Inspector
+    if st.session_state.get("session_context"):
+        with st.expander("🧠 Active Session Memory", expanded=False):
+            st.json(st.session_state.session_context)
+
+    # Person D Export Chat Log Button
+    if LOGGING_CONNECTED and export_log_as_text is not None:
+        st.download_button(
+            "📥 Export Chat Log",
+            data=export_log_as_text(),
+            file_name="rental_audit_log.txt",
+            mime="text/plain",
+            use_container_width=True
+        )
 
     st.divider()
 
     # Quick Test Prompts (Exact Judge Test Prompts)
     st.markdown("#### 💡 Quick Test Prompts")
     
-    if st.button("1. AUTO-QUOTE Prompt", key="btn_quick_1", use_container_width=True):
+    if st.button("1. AUTO-QUOTE Prompt", use_container_width=True):
         st.session_state.pending_prompt = "Need the mini excavator for 5 days starting Sept 15, site is our usual compacted lot, our operator's HEO cert is on file. From Ferreira Builders LLC."
+        st.rerun()
         
-    if st.button("2. REQUEST_INFO Prompt", key="btn_quick_2", use_container_width=True):
+    if st.button("2. REQUEST_INFO Prompt", use_container_width=True):
         st.session_state.pending_prompt = "Need a scissor lift for a job next week, maybe 4-5 days, not sure on exact dates yet."
+        st.rerun()
         
-    if st.button("3. MANUAL_REVIEW Prompt", key="btn_quick_3", use_container_width=True):
+    if st.button("3. MANUAL_REVIEW Prompt", use_container_width=True):
         st.session_state.pending_prompt = "Need the 50-ton mobile crane for a demolition job starting tomorrow morning, 3 days, downtown site with tight access. This is Titan Demolition Inc."
+        st.rerun()
         
-    if st.button("4. UNRECOGNIZED Prompt", key="btn_quick_4", use_container_width=True):
+    if st.button("4. UNRECOGNIZED Prompt", use_container_width=True):
         st.session_state.pending_prompt = "Do you rent bulldozers for residential lawn mowing?"
+        st.rerun()
 
     st.divider()
 
@@ -551,13 +517,37 @@ if user_input:
         with st.spinner("Processing rental inquiry through Decision Agent..."):
             if BACKEND_CONNECTED and run_rental_agent is not None:
                 try:
-                    result = run_rental_agent(user_input)
+                    # Construct chat_history for multi-turn conversational context
+                    chat_history = []
+                    for m in st.session_state.messages:
+                        if m.get("role") == "user" and m.get("content"):
+                            chat_history.append({"role": "user", "content": m["content"]})
+                        elif m.get("role") == "assistant":
+                            res = m.get("result", {})
+                            msg_text = res.get("message") or m.get("content", "")
+                            if msg_text:
+                                chat_history.append({"role": "assistant", "content": msg_text})
+
+                    session_ctx = st.session_state.get("session_context", {})
+                    result = run_rental_agent(
+                        user_input,
+                        chat_history=chat_history,
+                        session_context=session_ctx,
+                    )
                     if isinstance(result, dict):
+                        # Persist accumulated multi-turn state
+                        st.session_state.session_context = result.get("session_context", {})
                         render_result(result)
                         st.session_state.messages.append({
                             "role": "assistant",
                             "result": result
                         })
+                        # Person D Decision Logging Integration
+                        if LOGGING_CONNECTED and log_decision is not None:
+                            try:
+                                log_decision(user_input, result)
+                            except Exception:
+                                pass  # Ensure logging failure never blocks UI rendering
                     else:
                         st.error("Invalid response format received from backend agent.")
                 except Exception as err:
